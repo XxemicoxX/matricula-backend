@@ -57,6 +57,13 @@ public class Pago {
     @Column(name = "referencia_comprobante", length = 150)
     private String referenciaComprobante;
 
+    /** Archivo del voucher adjuntado en el pago manual (ruta relativa dentro de app.storage.ruta). */
+    @Column(name = "ruta_comprobante", length = 300)
+    private String rutaComprobante;
+
+    @Column(name = "nombre_comprobante", length = 200)
+    private String nombreComprobante;
+
     @Column(name = "fecha_registro", nullable = false)
     private Instant fechaRegistro;
 }

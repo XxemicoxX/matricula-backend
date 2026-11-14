@@ -3,6 +3,7 @@ package pe.sdj.matricula.service;
 import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
+import org.springframework.web.multipart.MultipartFile;
 import pe.sdj.matricula.common.BusinessException;
 import pe.sdj.matricula.config.AppProperties;
 import pe.sdj.matricula.domain.*;
@@ -43,11 +44,18 @@ public class PagoService {
     private final AuditoriaService auditoria;
     private final NotificacionService notificaciones;
     private final AppProperties props;
+    private final AlmacenamientoService almacenamiento;
     private final Clock clock;
 
     /** CU-17: registro manual por Tesorería/Secretaría ante fallas de comunicación bancaria. */
     @Transactional
     public ResultadoPago registrarManual(UsuarioActual u, PagoManualRequest req) {
+        return registrarManual(u, req, null);
+    }
+
+    /** Igual que el anterior, guardando además el voucher (PDF/PNG/JPG, máx. 5 MB) si se adjuntó. */
+    @Transactional
+    public ResultadoPago registrarManual(UsuarioActual u, PagoManualRequest req, MultipartFile comprobante) {
         Matricula m = matriculas.findById(req.matriculaId())
                 .orElseThrow(() -> BusinessException.notFound("La matrícula no existe."));
         CodigoPago cp = codigos.findByMatriculaId(m.getId())
@@ -68,6 +76,13 @@ public class PagoService {
                     "La reserva venció y la sección ya no tiene cupo. Reubica al estudiante o gestiona la devolución.");
             default -> {
             }
+        }
+        if (comprobante != null && !comprobante.isEmpty() && r.pagoId() != null) {
+            // Si el archivo no es válido, se lanza la excepción y se revierte todo el registro del pago.
+            Pago p = pagos.findById(r.pagoId()).orElseThrow();
+            AlmacenamientoService.Guardado g = almacenamiento.guardar(comprobante, "pagos/" + p.getId());
+            p.setRutaComprobante(g.rutaRelativa());
+            p.setNombreComprobante(g.nombreOriginal());
         }
         return r;
     }
@@ -117,6 +132,7 @@ public class PagoService {
         m.setEstado(EstadoMatricula.MATRICULADO);
         m.setFechaMatricula(ahora);
         cp.setEstado(EstadoCodigoPago.PAGADO);
+        cerrarSiCompleta(m, in.usuarioId());
 
         auditoria.registrarComo(in.usuarioId(), in.tipo() == TipoPago.MANUAL ? "PAGO_MANUAL_CONFIRMADO" : "PAGO_CONFIRMADO",
                 "Matrícula " + m.getId() + " confirmada con op. " + in.numeroOperacion() + " (" + in.proveedor() + ")");
@@ -125,6 +141,25 @@ public class PagoService {
                 "¡Matrícula confirmada! " + e.nombreCompleto() + " quedó matriculado(a) para el año " + m.getPeriodoAcademico()
                         + ". Ya puedes descargar la constancia en PDF.");
         return new ResultadoPago(Resultado.CONFIRMADO, m.getEstado(), p.getId());
+    }
+
+    /**
+     * Mientras la última vacante esté reservada pero sin pagar, la sección sigue ABIERTA (sin cupo, RN-03 bloquea
+     * nuevas reservas y la vacante se libera si la reserva vence). Cuando se confirma el pago y todas las vacantes
+     * quedan con matrícula confirmada, la sección pasa a CERRADA.
+     */
+    private void cerrarSiCompleta(Matricula m, Long usuarioId) {
+        Seccion s = secciones.findByIdForUpdate(m.getSeccion().getId()).orElseThrow();
+        if (s.getEstado() != EstadoSeccion.ABIERTA) {
+            return;
+        }
+        long confirmadas = matriculas.countBySeccionIdAndPeriodoAcademicoAndEstado(
+                s.getId(), m.getPeriodoAcademico(), EstadoMatricula.MATRICULADO);
+        if (confirmadas >= s.getAforoMaximo()) {
+            s.setEstado(EstadoSeccion.CERRADA);
+            auditoria.registrarComo(usuarioId, "CIERRE_AUTOMATICO_SECCION", "Sección " + s.getId()
+                    + " cerrada: " + confirmadas + " de " + s.getAforoMaximo() + " vacantes con matrícula confirmada");
+        }
     }
 
     /** Pago manual sobre una reserva vencida: solo se recupera si la sección sigue abierta y con cupo. */

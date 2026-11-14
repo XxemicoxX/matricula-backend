@@ -31,6 +31,9 @@ public interface MatriculaRepository extends JpaRepository<Matricula, Long>, Jpa
     @Query("select count(m) from Matricula m where m.seccion.id = :seccionId and m.periodoAcademico = :periodo and " + OCUPA)
     long contarOcupadas(@Param("seccionId") Long seccionId, @Param("periodo") String periodo, @Param("ahora") Instant ahora);
 
+    /** Matrículas confirmadas de una sección (para el cierre automático al completarse el aforo). */
+    long countBySeccionIdAndPeriodoAcademicoAndEstado(Long seccionId, String periodoAcademico, EstadoMatricula estado);
+
     /** Filas [seccionId, estado, cantidad] de cupos ocupados, para listar disponibilidad sin N+1. */
     @Query("select m.seccion.id, m.estado, count(m) from Matricula m where m.periodoAcademico = :periodo and " + OCUPA
             + " group by m.seccion.id, m.estado")
